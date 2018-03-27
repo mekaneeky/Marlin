@@ -801,6 +801,9 @@ void kill_screen(const char* lcd_msg) {
       #if FAN_COUNT > 0
         for (uint8_t i = 0; i < FAN_COUNT; i++) fanSpeeds[i] = 0;
       #endif
+	  enqueue_and_echo_commands_P(PSTR("G1 Z3"));
+	  enqueue_and_echo_commands_P(PSTR("G28 X Y"));
+	  enqueue_and_echo_commands_P(PSTR("M84")); //diasble steppers
       wait_for_heatup = false;
       lcd_setstatusPGM(PSTR(MSG_PRINT_ABORTED), -1);
       lcd_return_to_status();
@@ -956,7 +959,47 @@ void kill_screen(const char* lcd_msg) {
     START_MENU();
     MENU_BACK(MSG_WATCH);
 
-    #if ENABLED(CUSTOM_USER_MENUS)
+	#if ENABLED(SDSUPPORT)
+      if (card.cardOK) {
+        if (card.isFileOpen()) {
+          if (card.sdprinting)
+            MENU_ITEM(function, MSG_PAUSE_PRINT, lcd_sdcard_pause);
+          else
+            MENU_ITEM(function, MSG_RESUME_PRINT, lcd_sdcard_resume);
+        }
+        else {
+          MENU_ITEM(submenu, MSG_CARD_MENU, lcd_sdcard_menu);
+          #if !PIN_EXISTS(SD_DETECT)
+            MENU_ITEM(gcode, MSG_CNG_SDCARD, PSTR("M21"));  // SD-card changed by user
+          #endif
+        }
+      }
+      else {
+        MENU_ITEM(submenu, MSG_NO_CARD, lcd_sdcard_menu);
+        #if !PIN_EXISTS(SD_DETECT)
+          MENU_ITEM(gcode, MSG_INIT_SDCARD, PSTR("M21")); // Manually initialize the SD-card via user interface
+        #endif
+      }
+	  
+	  
+    #endif // SDSUPPORT
+
+	if (planner.movesplanned() || IS_SD_PRINTING) {
+      MENU_ITEM(submenu, MSG_TUNE, lcd_tune_menu);
+    }
+    else {
+      MENU_ITEM(submenu, MSG_PREPARE, lcd_prepare_menu);
+    }
+	
+	#if ENABLED(SDSUPPORT)
+      if (card.cardOK) {
+        if (card.isFileOpen()) {
+         MENU_ITEM(function, MSG_STOP_PRINT, lcd_sdcard_stop);
+        }
+      }
+    #endif // SDSUPPORT
+	
+	#if ENABLED(CUSTOM_USER_MENUS)
       MENU_ITEM(submenu, MSG_USER_MENU, _lcd_user_menu);
     #endif
 
@@ -978,45 +1021,17 @@ void kill_screen(const char* lcd_msg) {
         MENU_ITEM_EDIT_CALLBACK(bool, MSG_CASE_LIGHT, (bool*)&case_light_on, update_case_light);
     #endif
 
-    if (planner.movesplanned() || IS_SD_PRINTING) {
-      MENU_ITEM(submenu, MSG_TUNE, lcd_tune_menu);
-    }
-    else {
-      MENU_ITEM(submenu, MSG_PREPARE, lcd_prepare_menu);
-    }
+    #if ENABLED(LED_CONTROL_MENU)
+      MENU_ITEM(submenu, MSG_LED_CONTROL, lcd_led_menu);
+    #endif
+
     MENU_ITEM(submenu, MSG_CONTROL, lcd_control_menu);
 
-    #if ENABLED(SDSUPPORT)
-      if (card.cardOK) {
-        if (card.isFileOpen()) {
-          if (card.sdprinting)
-            MENU_ITEM(function, MSG_PAUSE_PRINT, lcd_sdcard_pause);
-          else
-            MENU_ITEM(function, MSG_RESUME_PRINT, lcd_sdcard_resume);
-          MENU_ITEM(function, MSG_STOP_PRINT, lcd_sdcard_stop);
-        }
-        else {
-          MENU_ITEM(submenu, MSG_CARD_MENU, lcd_sdcard_menu);
-          #if !PIN_EXISTS(SD_DETECT)
-            MENU_ITEM(gcode, MSG_CNG_SDCARD, PSTR("M21"));  // SD-card changed by user
-          #endif
-        }
-      }
-      else {
-        MENU_ITEM(submenu, MSG_NO_CARD, lcd_sdcard_menu);
-        #if !PIN_EXISTS(SD_DETECT)
-          MENU_ITEM(gcode, MSG_INIT_SDCARD, PSTR("M21")); // Manually initialize the SD-card via user interface
-        #endif
-      }
-    #endif // SDSUPPORT
 
     #if ENABLED(LCD_INFO_MENU)
       MENU_ITEM(submenu, MSG_INFO_MENU, lcd_info_menu);
     #endif
 
-    #if ENABLED(LED_CONTROL_MENU)
-      MENU_ITEM(submenu, MSG_LED_CONTROL, lcd_led_menu);
-    #endif
 
     END_MENU();
   }
@@ -2519,13 +2534,30 @@ void kill_screen(const char* lcd_msg) {
     //
     MENU_BACK(MSG_MAIN);
 
-    //
-    // Move Axis
-    //
-    #if ENABLED(DELTA)
-      if (axis_homed[X_AXIS] && axis_homed[Y_AXIS] && axis_homed[Z_AXIS])
-    #endif
-        MENU_ITEM(submenu, MSG_MOVE_AXIS, lcd_move_menu);
+    #if TEMP_SENSOR_0 != 0
+
+      //
+      // Cooldown
+      //
+      bool has_heat = false;
+      HOTEND_LOOP() if (thermalManager.target_temperature[HOTEND_INDEX]) { has_heat = true; break; }
+      #if HAS_TEMP_BED
+        if (thermalManager.target_temperature_bed) has_heat = true;
+      #endif
+      if (has_heat) MENU_ITEM(function, MSG_COOLDOWN, lcd_cooldown);
+
+
+
+	  //
+      // Preheat for Material PLA
+      //
+      #if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 || TEMP_SENSOR_3 != 0 || TEMP_SENSOR_4 != 0 || TEMP_SENSOR_BED != 0
+        MENU_ITEM(submenu, MSG_PREHEAT_1, lcd_preheat_m1_menu);
+      #else
+        MENU_ITEM(function, MSG_PREHEAT_1, lcd_preheat_m1_e0_only);
+      #endif
+
+    #endif // TEMP_SENSOR_0 != 0	  
 
     //
     // Auto Home
@@ -2537,6 +2569,16 @@ void kill_screen(const char* lcd_msg) {
       MENU_ITEM(gcode, MSG_AUTO_HOME_Z, PSTR("G28 Z"));
     #endif
 
+	//
+    // Move Axis
+    //
+    #if ENABLED(DELTA)
+      if (axis_homed[X_AXIS] && axis_homed[Y_AXIS] && axis_homed[Z_AXIS])
+    #endif
+        MENU_ITEM(submenu, MSG_MOVE_AXIS, lcd_move_menu);
+		
+	
+	
     //
     // Level Bed
     //
@@ -2562,6 +2604,13 @@ void kill_screen(const char* lcd_msg) {
         MENU_ITEM(function, MSG_LEVEL_CORNERS, _lcd_level_bed_corners);
     #endif
 
+
+
+    //
+    // Disable Steppers
+    //
+    MENU_ITEM(gcode, MSG_DISABLE_STEPPERS, PSTR("M84"));
+
     #if HAS_M206_COMMAND
       //
       // Set Home Offsets
@@ -2569,12 +2618,8 @@ void kill_screen(const char* lcd_msg) {
       MENU_ITEM(function, MSG_SET_HOME_OFFSETS, lcd_set_home_offsets);
       //MENU_ITEM(gcode, MSG_SET_ORIGIN, PSTR("G92 X0 Y0 Z0"));
     #endif
-
-    //
-    // Disable Steppers
-    //
-    MENU_ITEM(gcode, MSG_DISABLE_STEPPERS, PSTR("M84"));
-
+	
+	
     //
     // Change filament
     //
@@ -2583,30 +2628,6 @@ void kill_screen(const char* lcd_msg) {
         MENU_ITEM(function, MSG_FILAMENTCHANGE, lcd_enqueue_filament_change);
     #endif
 
-    #if TEMP_SENSOR_0 != 0
-
-      //
-      // Cooldown
-      //
-      bool has_heat = false;
-      HOTEND_LOOP() if (thermalManager.target_temperature[HOTEND_INDEX]) { has_heat = true; break; }
-      #if HAS_TEMP_BED
-        if (thermalManager.target_temperature_bed) has_heat = true;
-      #endif
-      if (has_heat) MENU_ITEM(function, MSG_COOLDOWN, lcd_cooldown);
-
-      //
-      // Preheat for Material 1 and 2
-      //
-      #if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 || TEMP_SENSOR_3 != 0 || TEMP_SENSOR_4 != 0 || TEMP_SENSOR_BED != 0
-        MENU_ITEM(submenu, MSG_PREHEAT_1, lcd_preheat_m1_menu);
-        MENU_ITEM(submenu, MSG_PREHEAT_2, lcd_preheat_m2_menu);
-      #else
-        MENU_ITEM(function, MSG_PREHEAT_1, lcd_preheat_m1_e0_only);
-        MENU_ITEM(function, MSG_PREHEAT_2, lcd_preheat_m2_e0_only);
-      #endif
-
-    #endif // TEMP_SENSOR_0 != 0
 
     //
     // BLTouch Self-Test and Reset
@@ -2640,6 +2661,19 @@ void kill_screen(const char* lcd_msg) {
     #if ENABLED(DELTA_CALIBRATION_MENU) || ENABLED(DELTA_AUTO_CALIBRATION)
       MENU_ITEM(submenu, MSG_DELTA_CALIBRATE, lcd_delta_calibrate_menu);
     #endif
+
+    #if TEMP_SENSOR_0 != 0
+
+	  //
+      // Preheat for ABS
+      //
+      #if TEMP_SENSOR_1 != 0 || TEMP_SENSOR_2 != 0 || TEMP_SENSOR_3 != 0 || TEMP_SENSOR_4 != 0 || TEMP_SENSOR_BED != 0
+        MENU_ITEM(submenu, MSG_PREHEAT_2, lcd_preheat_m2_menu);
+      #else
+        MENU_ITEM(function, MSG_PREHEAT_2, lcd_preheat_m2_e0_only);
+      #endif
+
+    #endif // TEMP_SENSOR_0 != 0
 
     END_MENU();
   }
